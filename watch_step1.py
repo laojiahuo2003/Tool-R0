@@ -10,7 +10,7 @@ this log the tqdm progress bar and the full metric dict share one line, e.g.
 import re
 import sys
 
-PROG = re.compile(r"(\d+)/100 \[[0-9:]+<[0-9:]+, ([0-9.]+)s/it\]")
+PROG = re.compile(r"(\d+)/\d+ \[[0-9:]+<[0-9:]+, ([0-9.]+)s/it\]")
 KV = re.compile(r"'([^']+)': ([0-9.eE+-]+)")
 FAIL = ("Traceback", "CUDA out of memory", "Killed", "ABORT",
         "did not become ready", "Max retries", "RuntimeError", "OutOfMemoryError")

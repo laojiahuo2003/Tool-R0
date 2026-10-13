@@ -9,8 +9,12 @@ ABBREVIATION="${ABBREVIATION:-qwen2.5-3b-instruct-tool-r0}"
 ITERATIONS=1
 # 4 步时每个 optimizer step 只有 2 个不同 prompt（generation_batch_size=8 completions
 # ÷ num_generations 4），全程只见过 8 个 prompt，3/4 的步 grad_norm=0、frac_reward_zero_std=1.0，
-# generator 实质没动，step2 只能 kept 7/300。拉到 100 步 = 200 个 prompt（约 2 epoch）。
-TRAIN_STEPS_GEN=100
+# generator 实质没动，step2 只能 kept 7/300——所以步数不能太少。这里取 50：与论文每轮的
+# 50 步、以及本文件的 TRAIN_STEPS_SOLVER=50 对齐，50 步 ≈ 100 个 prompt（N_SPECS=100 时
+# 约 1 epoch，每步约 2 个不同 prompt），时间比 100 步减半，先把闭环跑通再谈加量。
+# Trainer 会在 max_steps 处存一份最终 checkpoint，所以 50 能被 run_step1.sh 的
+# save_steps 20 整除与否都不影响 checkpoint-50 的存在（SFT 那轮 73 步存出 checkpoint-73 即证）。
+TRAIN_STEPS_GEN=50
 TRAIN_STEPS_SOLVER=50
 BASE_DIR="./${ABBREVIATION}"
 
