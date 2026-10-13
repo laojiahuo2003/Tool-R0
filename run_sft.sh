@@ -42,7 +42,6 @@ python sft_generator.py \
     --gradient_accumulation_steps 4 \
     --learning_rate 1e-4 \
     --lr_scheduler_type cosine \
-    --warmup_ratio 0.03 \
     --bf16 True \
     --max_length 4096 \
     --completion_only_loss True \
