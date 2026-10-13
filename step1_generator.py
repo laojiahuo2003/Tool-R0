@@ -1,6 +1,8 @@
 
 import argparse
 import os
+import re
+from typing import Optional
 
 from dataclasses import dataclass, field
 from datasets import Dataset, load_dataset
@@ -14,7 +16,6 @@ from trl import (
     TrlParser,
     get_peft_config,
     get_quantization_config,
-    get_kbit_device_map,
 )
 
 from rewards_generator import (
@@ -22,6 +23,13 @@ from rewards_generator import (
     reward_validity_accuracy,
     reward_curriculum,
 )
+
+# Imported rather than restated: step1 used to carry its own copy of the
+# generator prompt, which had drifted from the one step2_gen actually verifies
+# with (four-space indentation on every line, and "Generate a new" where
+# step2_gen says "Generate one new"). SFT data is now trained against the
+# step2_gen wording, so both stages have to read the same string.
+from step2_gen import SYSTEM_PROMPT_GENERATOR_TEMPLATE, USER_PROMPT_GENERATOR
 
 @dataclass
 class MyScriptArguments(ScriptArguments):
@@ -34,7 +42,7 @@ class MyScriptArguments(ScriptArguments):
 import random
 import json
 from datasets import Dataset
-
+# 有各种领域
 DOMAINS = [
     # --- Primary Functional Domains (Explicitly listed in docs) ---
     "finance",              # Stock trading, mortgage calculation, banking APIs
@@ -75,7 +83,7 @@ DOMAINS = [
     "utilities",            # Energy usage, utility billing
     "customer_support"      # FAQ retrieval, ticket creation
 ]
-
+# 每个领域的权重
 DOMAIN_WEIGHTS = {
     "finance": 0.03125,
     "healthcare": 0.03125,
@@ -148,15 +156,15 @@ DOMAIN_WEIGHTS = {
 #     "travel": 0.02,  # intentionally low
 # }
 
-
+# 采样任务领域
 def weighted_choice(weight_dict):
     items = list(weight_dict.items())
     keys, weights = zip(*items)
     return random.choices(keys, weights=weights, k=1)[0]
-
+# 设置任务难度和领域
 def sample_spec():
 
-    context_type = random.choices(["single_turn", "multi_turn"], weights=[0.9, 0.1], k=1)[0]
+    context_type = random.choices(["single_turn", "multi_turn"], weights=[0.9, 0.1], k=1)[0]# 90概率是单轮
 
     if context_type == "multi_turn":
         num_calls = 1
@@ -180,6 +188,7 @@ def sample_spec():
 
 
 
+
 def main():
     parser = TrlParser((MyScriptArguments, GRPOConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
@@ -191,66 +200,11 @@ def main():
     train_dataset = Dataset.from_list(dummy_examples)
     train_dataset = train_dataset.add_column("gen_spec", [json.dumps(s) for s in specs])
 
-    SYSTEM_PROMPT_GENERATOR_TEMPLATE = """You are an expert task generator for tool-calling agents.
 
-    FIRST, in your private scratch-pad, reason step-by-step to design a realistic, non-trivial task that cannot be solved without correctly calling one or sometimes multiple tools.
-
-    CONTROL SPEC (MUST FOLLOW EXACTLY):
-    - Domain: {domain}
-    - Context type: {context_type}  (single_turn or multi_turn)
-    - Number of available tools: {tool_menu_size} (<available_tools>)
-    - Number of gold tool calls: {num_calls} (<tool_call_answer>)
-
-    RULES TO SATISFY THE SPEC:
-    1) You MUST output exactly {tool_menu_size} tools in <available_tools>.
-    2) You MUST output exactly {num_calls} tool calls (JSON list length) in <tool_call_answer>.
-    3) Domain must be {domain}. Do not drift into other domains.
-    4) If context_type=multi_turn, embed a short conversation in <question> like: "# Conversation\\nUser: ...\\nAgent: ...\\nUser: ...\\nAgent: ..."
-    5) Tool arguments must be flat primitives only (no lists, no nested objects).
-    6) The function values (<value1>, <value2>, ...) MUST be present inside user question (<question>...</question>), otherwise agent cannot solve the task.
-
-    THEN, without revealing your reasoning, output the following four blocks in the exact format, NOTHING ELSE:
-
-    <think>
-    Your private reasoning here.
-    </think>
-
-    <question>
-    Write a natural user question (no bullet points, no meta-instructions, no placeholders).
-    It must be a natural question, be in domain "{domain}", and mention the exact argument values that appear in <tool_call_answer>.
-    </question>
-
-    <available_tools>
-    A JSON list of tools. Each tool MUST include: "name", "description", and "parameters". "parameters" MUST be a JSON object mapping param_name -> {{ "type": "...", "description": "..." }} and OPTIONALLY include top-level "required": ["param1", ...] which can be empty list if no required parameters.
-    [
-        {{
-            "name": "<tool_name>",
-            "description": "<short description>",
-            "parameters": {{
-            "<param1>": {{"type": "<param1_type>", "description": "<param1_description>"}},
-            "<param2>": {{"type": "<param2_type>", "description": "<param2_description>"}},
-            ...
-            }},
-            "required": [<param1>, ...],
-        }},
-        ...
-    ]
-    </available_tools>
-
-    <tool_call_answer>
-    [
-    {{\"name\": \"<tool_name>\", \"arguments\": {{\"<param>\": <value>, ...}}}}
-    ]
-    </tool_call_answer>"""
-
-    USER_PROMPT_GENERATOR = "Generate a new tool-calling task now. Follow the CONTROL SPEC exactly and remember to format the output exactly as instructed."
-
-    SYSTEM_PROMPT_SOLVER = (
-        "A conversation between user and tool-calling assistant. The user asks a question, and the assistant uses tools to solve it. The "
-        "assistant first thinks about the reasoning process in the mind and then provides the user with the answer. "
-        "The reasoning process and answer are enclosed within <think></think> and <tool_call_answer></tool_call_answer> tags, i.e., <think>\nThis is my "
-        "reasoning.\n</think>\n<tool_call_answer>[{\"name\": \"<tool_name>\", \"arguments\": {\"arg1\": \"value\", \"arg2\": \"value2\", ...}}, ...]</tool_call_answer>."
-    )
+    # Imported rather than restated: step1 used to carry its own copy of this
+    # prompt, so the difficulty reward during training probed the solver with a
+    # different system prompt than step2_genverify actually verifies with.
+    from step2_genverify import SYSTEM_PROMPT_SOLVER
 
     def make_conversation_generator(example):
         spec = json.loads(example["gen_spec"])
@@ -285,9 +239,63 @@ def main():
             reward_curriculum,
         ],
         train_dataset=train_dataset,
+        peft_config=get_peft_config(model_args),
     )
 
     trainer.train()
+
+    merge_lora_checkpoint(model_args, training_args)
+
+
+def _latest_checkpoint(output_dir: str) -> Optional[str]:
+    """Return the highest-numbered checkpoint-* directory under output_dir."""
+    best, best_step = None, -1
+    if not os.path.isdir(output_dir):
+        return None
+    for name in os.listdir(output_dir):
+        m = re.fullmatch(r"checkpoint-(\d+)", name)
+        if m and int(m.group(1)) > best_step:
+            best, best_step = os.path.join(output_dir, name), int(m.group(1))
+    return best
+
+
+def merge_lora_checkpoint(model_args, training_args) -> None:
+    """Fold the LoRA adapter into the base weights and rewrite the checkpoint.
+
+    TRL saves a PEFT run as an adapter-only directory, but step2 loads the
+    generator checkpoint with vLLM as a plain model, so the adapter has to be
+    merged back into the base weights first. No-op when LoRA is disabled.
+    """
+    if not model_args.use_peft:
+        return
+
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    ckpt = _latest_checkpoint(training_args.output_dir)
+    if ckpt is None:
+        print(f"[merge] no checkpoint found under {training_args.output_dir}, skipping")
+        return
+
+    print(f"[merge] merging {ckpt} into {model_args.model_name_or_path}")
+    base = AutoModelForCausalLM.from_pretrained(
+        model_args.model_name_or_path,
+        dtype=torch.bfloat16,
+        trust_remote_code=True,
+    )
+    merged = PeftModel.from_pretrained(base, ckpt).merge_and_unload()
+
+    # Drop the adapter files so the directory is an unambiguous full model.
+    for name in ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"):
+        path = os.path.join(ckpt, name)
+        if os.path.exists(path):
+            os.remove(path)
+
+    merged.save_pretrained(ckpt)
+    AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path, trust_remote_code=True
+    ).save_pretrained(ckpt)
+    print(f"[merge] wrote full model to {ckpt}")
 
 
 if __name__ == "__main__":

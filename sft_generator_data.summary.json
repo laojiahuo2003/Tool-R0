@@ -1,0 +1,122 @@
+{
+  "model": "qwen3.7-flash",
+  "requested": 1200,
+  "accepted": 1156,
+  "rejected": 44,
+  "accept_rate": 0.9633,
+  "target_distribution": {
+    "domain": {
+      "vehicle_control": 42,
+      "scheduling": 33,
+      "geolocation": 37,
+      "legal": 36,
+      "government": 40,
+      "food_ordering": 42,
+      "system": 33,
+      "sports": 33,
+      "insurance": 30,
+      "retail_ecommerce": 40,
+      "logistics": 47,
+      "entertainment": 39,
+      "social_media": 32,
+      "memory_management": 38,
+      "web_search": 44,
+      "communication": 45,
+      "math": 40,
+      "healthcare": 40,
+      "finance": 45,
+      "productivity": 27,
+      "database": 38,
+      "real_estate": 38,
+      "education": 33,
+      "iot": 32,
+      "travel": 51,
+      "programming": 31,
+      "utilities": 37,
+      "translation": 34,
+      "cybersecurity": 31,
+      "cloud_infrastructure": 33,
+      "news": 40,
+      "weather": 39
+    },
+    "context_type": {
+      "single_turn": 1085,
+      "multi_turn": 115
+    },
+    "num_calls": {
+      "1": 960,
+      "2": 240
+    },
+    "tool_menu_size": {
+      "7": 157,
+      "5": 217,
+      "3": 209,
+      "6": 132,
+      "4": 205,
+      "8": 139,
+      "2": 141
+    }
+  },
+  "accepted_distribution": {
+    "domain": {
+      "government": 39,
+      "legal": 36,
+      "vehicle_control": 34,
+      "geolocation": 35,
+      "retail_ecommerce": 40,
+      "sports": 33,
+      "insurance": 30,
+      "logistics": 47,
+      "social_media": 32,
+      "entertainment": 39,
+      "food_ordering": 40,
+      "math": 38,
+      "communication": 45,
+      "healthcare": 40,
+      "scheduling": 32,
+      "productivity": 26,
+      "web_search": 39,
+      "finance": 45,
+      "real_estate": 38,
+      "education": 33,
+      "iot": 31,
+      "programming": 31,
+      "travel": 49,
+      "translation": 34,
+      "utilities": 37,
+      "cybersecurity": 31,
+      "memory_management": 34,
+      "cloud_infrastructure": 32,
+      "news": 37,
+      "database": 33,
+      "weather": 39,
+      "system": 27
+    },
+    "context_type": {
+      "single_turn": 1053,
+      "multi_turn": 103
+    },
+    "num_calls": {
+      "2": 234,
+      "1": 922
+    },
+    "tool_menu_size": {
+      "3": 206,
+      "4": 201,
+      "5": 209,
+      "6": 125,
+      "8": 131,
+      "7": 143,
+      "2": 141
+    }
+  },
+  "reject_reasons": {
+    "format_score=0.667": 5,
+    "pv": 13,
+    "validity_score=0.200": 1,
+    "missing_tags": 13,
+    "validity_score=0.800": 10,
+    "format_score=0.333": 1,
+    "multi_turn_shape_missing": 1
+  }
+}

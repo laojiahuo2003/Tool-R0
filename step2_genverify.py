@@ -137,11 +137,54 @@ def gold_norm(calls: List[Dict[str, Any]]) -> str:
     return normalize_call_json(calls) or ""
 
 
+_TAG_OPEN = "<tool_" + "call_answer>"
+_TAG_CLOSE = "</tool_" + "call_answer>"
+
+# The base model never emits the tag from the bare description above. Measured on
+# the 18 samples step2_gen produced (n=3 draws each): tag emission 11%, gold
+# name-match 0%. Appending two worked examples lifts that to 35% / 11% per draw,
+# which is enough to clear tau_verify=0.20 at k=10 for roughly a third of the
+# samples. Without this every sample dies on missing_tag and iter1_data.json is
+# always empty, so step3 never trains and no solver checkpoint is ever written.
+# Demos use tool names absent from the generator's domains so a model that merely
+# parrots them is distinguishable from one that answers.
+_FEWSHOT_DEMOS = (
+    "\n\nFollow these examples exactly.\n\n"
+    "Example 1\nUser request:\nCancel my 3pm dentist appointment on Friday.\n\n"
+    "Available tools (JSON):\n"
+    '[{"name": "list_appointments", "description": "List appointments for a date", '
+    '"parameters": {"type": "object", "properties": {"date": {"type": "string", '
+    '"description": "Date YYYY-MM-DD"}}, "required": ["date"]}}, '
+    '{"name": "cancel_appointment", "description": "Cancel an appointment by id", '
+    '"parameters": {"type": "object", "properties": {"appointment_id": {"type": "string"}}, '
+    '"required": ["appointment_id"]}}]\n\n'
+    "Assistant:\n"
+    "<think>I need the appointment's id before I can cancel it.</think>\n"
+    + _TAG_OPEN
+    + '[{"name": "list_appointments", "arguments": {"date": "2024-06-14"}}, '
+      '{"name": "cancel_appointment", "arguments": {"appointment_id": "appt_3pm_friday"}}]'
+    + _TAG_CLOSE
+    + "\n\nExample 2\nUser request:\nHow many open tickets does the payments team have right now?\n\n"
+    "Available tools (JSON):\n"
+    '[{"name": "list_teams", "description": "List teams", "parameters": {"type": "object", '
+    '"properties": {}, "required": []}}, '
+    '{"name": "count_tickets", "description": "Count tickets for a team", '
+    '"parameters": {"type": "object", "properties": {"team": {"type": "string"}, '
+    '"status": {"type": "string"}}, "required": ["team"]}}]\n\n'
+    "Assistant:\n"
+    "<think>I need the payments team id before I can count its tickets.</think>\n"
+    + _TAG_OPEN
+    + '[{"name": "list_teams", "arguments": {}}, '
+      '{"name": "count_tickets", "arguments": {"team": "payments", "status": "open"}}]'
+    + _TAG_CLOSE
+)
+
 SYSTEM_PROMPT_SOLVER = (
     "A conversation between user and tool-calling assistant. The user asks a question, and the assistant uses tools to solve it. The "
     "assistant first thinks about the reasoning process in the mind and then provides the user with the answer. "
-    "The reasoning process and answer are enclosed within <think></think> and <tool_call_answer></tool_call_answer> tags, i.e., <think>\nThis is my "
-    "reasoning.\n</think>\n<tool_call_answer>[{\"name\": \"<tool_name>\", \"arguments\": {\"arg1\": \"value\", \"arg2\": \"value2\", ...}}, ...]</tool_call_answer>."
+    "The reasoning process and answer are enclosed within <think></think> and " + _TAG_OPEN + _TAG_CLOSE + " tags, i.e., <think>\nThis is my "
+    "reasoning.\n</think>\n" + _TAG_OPEN + "[{\"name\": \"<tool_name>\", \"arguments\": {\"arg1\": \"value\", \"arg2\": \"value2\", ...}}, ...]" + _TAG_CLOSE + "."
+    + _FEWSHOT_DEMOS
 )
 
 SOLVER_USER_TMPL = """User request:

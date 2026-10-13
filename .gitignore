@@ -144,6 +144,17 @@ ENV/
 env.bak/
 venv.bak/
 
+# Run artifacts (created by run_main.sh / run_step0.sh)
+triton_autotune/
+wandb/
+vllm_server.log
+
+# Large model/training outputs. Regenerable, and a merged 0.5B checkpoint alone
+# (~1GB) blows past GitHub's 100MB per-file limit, so these must never be committed.
+qwen2.5-0.5b-instruct-tool-r0/
+*.safetensors
+.watch_offset
+
 # Spyder project settings
 .spyderproject
 .spyproject

@@ -511,11 +511,14 @@ def select_domain_then_difficulty(
 
 
 def build_solver_question(question: str, tools: List[Dict[str, Any]]) -> str:
-    return (
-        "User request:\n"
-        f"{question}\n\n"
-        "Available tools (JSON):\n"
-        f"{json.dumps(tools, ensure_ascii=False, indent=2)}"
+    # Delegated rather than restated, and dumped without indent to match
+    # step2_genverify.build_solver_prompt exactly. This local copy used indent=2
+    # while verify probed the solver with the compact dump, so step3 trained the
+    # solver on a prompt that differed from the one it was later evaluated with.
+    from step2_genverify import SOLVER_USER_TMPL
+    return SOLVER_USER_TMPL.format(
+        question=question,
+        tools_json=json.dumps(tools, ensure_ascii=False),
     )
 
 def write_output(path: str, selected: List[Item], enable_conf: bool, conf_alpha: float) -> None:

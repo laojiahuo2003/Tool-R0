@@ -1,7 +1,9 @@
 
 import argparse
 import os
+import re
 import json
+from typing import Optional
 
 from dataclasses import dataclass, field
 from datasets import Dataset, load_dataset
@@ -15,7 +17,6 @@ from trl import (
     TrlParser,
     get_peft_config,
     get_quantization_config,
-    get_kbit_device_map,
 )
 
 
@@ -50,12 +51,11 @@ def main():
     print("\n")
 
 
-    SYSTEM_PROMPT_SOLVER = (
-        "A conversation between user and tool-calling assistant. The user asks a question, and the assistant uses tools to solve it. The "
-        "assistant first thinks about the reasoning process in the mind and then provides the user with the answer. "
-        "The reasoning process and answer are enclosed within <think></think> and <tool_call_answer></tool_call_answer> tags, i.e., <think>\nThis is my "
-        "reasoning.\n</think>\n<tool_call_answer>[{\"name\": \"<tool_name>\", \"arguments\": {\"arg1\": \"value\", \"arg2\": \"value2\", ...}}, ...]</tool_call_answer>."
-    )
+    # Imported rather than restated: step3 carried its own copy of this prompt,
+    # so the solver was trained under instructions that differed from the ones
+    # step2_genverify verifies it with (and from what step1's difficulty reward
+    # probes it with in the next iteration).
+    from step2_genverify import SYSTEM_PROMPT_SOLVER
 
     
     def convert_answer_to_string(example):
@@ -83,9 +83,63 @@ def main():
         args=training_args,
         reward_funcs=[format_reward_func, accuracy_reward_func],
         train_dataset=train_dataset,
+        peft_config=get_peft_config(model_args),
     )
 
     trainer.train()
+
+    merge_lora_checkpoint(model_args, training_args)
+
+
+def _latest_checkpoint(output_dir: str) -> Optional[str]:
+    """Return the highest-numbered checkpoint-* directory under output_dir."""
+    best, best_step = None, -1
+    if not os.path.isdir(output_dir):
+        return None
+    for name in os.listdir(output_dir):
+        m = re.fullmatch(r"checkpoint-(\d+)", name)
+        if m and int(m.group(1)) > best_step:
+            best, best_step = os.path.join(output_dir, name), int(m.group(1))
+    return best
+
+
+def merge_lora_checkpoint(model_args, training_args) -> None:
+    """Fold the LoRA adapter into the base weights and rewrite the checkpoint.
+
+    TRL saves a PEFT run as an adapter-only directory, but step0/step2 load the
+    solver checkpoint with vLLM as a plain model, so the adapter has to be merged
+    back into the base weights first. No-op when LoRA is disabled.
+    """
+    if not model_args.use_peft:
+        return
+
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    ckpt = _latest_checkpoint(training_args.output_dir)
+    if ckpt is None:
+        print(f"[merge] no checkpoint found under {training_args.output_dir}, skipping")
+        return
+
+    print(f"[merge] merging {ckpt} into {model_args.model_name_or_path}")
+    base = AutoModelForCausalLM.from_pretrained(
+        model_args.model_name_or_path,
+        dtype=torch.bfloat16,
+        trust_remote_code=True,
+    )
+    merged = PeftModel.from_pretrained(base, ckpt).merge_and_unload()
+
+    # Drop the adapter files so the directory is an unambiguous full model.
+    for name in ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"):
+        path = os.path.join(ckpt, name)
+        if os.path.exists(path):
+            os.remove(path)
+
+    merged.save_pretrained(ckpt)
+    AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path, trust_remote_code=True
+    ).save_pretrained(ckpt)
+    print(f"[merge] wrote full model to {ckpt}")
 
 
 if __name__ == "__main__":

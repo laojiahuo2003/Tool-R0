@@ -8,12 +8,24 @@ import unicodedata
 
 from openai import OpenAI
 
+from question_quality import is_unusable_question
+from step2_gen import normalize_tools_schema
+from step2_genverify import SOLVER_USER_TMPL
+
 P_LOW = 0.25
 P_HIGH = 0.75
 P_TARGET = 0.5
 K_SOLVER_SAMPLES = 8
 TEMP_SOLVER = 0.7
 MAX_TOKENS_SOLVER = 2048
+
+# Generation for the solver probe stops at the closing tag rather than running to
+# max_tokens: nothing in the solver's prompt tells it to stop after the answer,
+# so every request otherwise burns the full 2048-token budget on trailing text
+# that _last_tag discards. This is the single largest cost in step time.
+# vLLM strips stop strings from the returned text unless asked not to, and
+# _last_tag matches on the closing tag, so the two must travel together.
+_SOLVER_STOP = "</tool_" + "call_answer>"
 
 W_FORMAT = 0.25
 W_GOLD_VALID = 0.25
@@ -50,6 +62,53 @@ def _last_tag(text: str, tag: str) -> Optional[str]:
     if not m:
         return None
     return m[-1].strip()
+
+
+def _text_after_last_open_tag(text: str, tag: str) -> Optional[str]:
+    """Everything after the last `<tag>` opening marker, closing tag optional.
+
+    Needed because stopping generation at the closing tag removes it from the
+    returned text: vLLM strips stop strings, and its include_stop_str_in_output
+    flag is not honoured on the chat endpoint in 0.8.4 (verified against a live
+    server -- the text ends exactly where the tag would have been). _last_tag
+    alone would then return None for every sample.
+    """
+    open_re = re.compile(r"<" + re.escape(tag) + r">", re.DOTALL)
+    matches = list(open_re.finditer(text))
+    if not matches:
+        return None
+    return text[matches[-1].end():]
+
+
+def _trim_to_json_array(s: str) -> Optional[str]:
+    """The first balanced [...] in s, or the tail if the array is unterminated.
+
+    Bracket matching has to respect string literals, since a gold argument value
+    can contain either bracket.
+    """
+    start = s.find("[")
+    if start < 0:
+        return None
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return s[start:i + 1]
+    return s[start:]
 
 
 def extract_generator_fields(completion_text: str, think_flag: bool = False) -> Optional[Dict[str, str]]:
@@ -142,12 +201,19 @@ def normalize_tool_call(obj: Any) -> Optional[Dict[str, Any]]:
 
 
 def parse_available_tools(tools_text: str) -> Optional[List[Dict[str, Any]]]:
-    """Parse and validate the `<available_tools>` JSON payload.
+    """Parse, validate and normalize the `<available_tools>` JSON payload.
 
     Attempts to deserialize `tools_text` and checks that it is a non-empty
     list of dicts where each entry has a non-empty string `name` field and
     an optional `parameters` field that, if present, is a dict. Returns the
     validated list or None if the structure is invalid.
+
+    The list comes back in the normalized shape step2_gen writes to disk. The
+    generator prompt puts `required` beside `name`/`parameters`, but every
+    schema consumer downstream reads it from inside `parameters`, so returning
+    the raw dicts left `validate_args_against_schema` looking for a `required`
+    key that was never there -- it returned True unconditionally, and
+    `reward_gold_args_valid` paid 1.0 for any arguments at all.
     """
     tools = _json_loads_relaxed(tools_text)
     if not isinstance(tools, list) or len(tools) == 0:
@@ -159,7 +225,7 @@ def parse_available_tools(tools_text: str) -> Optional[List[Dict[str, Any]]]:
             return None
         if "parameters" in t and not isinstance(t["parameters"], dict):
             return None
-    return tools
+    return normalize_tools_schema(tools)
 
 
 def validate_args_against_schema(args: Dict[str, Any], schema: Optional[Dict[str, Any]]) -> bool:
@@ -187,13 +253,25 @@ def tool_index(tools: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
 
 def build_solver_user_message(question: str, tools_text: str) -> str:
-    """Construct the user message passed to the solver model."""
-    return question.strip() + "\n\n<available_tools>\n" + tools_text.strip() + "\n</available_tools>\n"
+    """Construct the user message passed to the solver model.
+
+    Must match what step2_genverify actually verifies with. This used to wrap the
+    tools in <available_tools></available_tools> -- the *generator's* tag format,
+    which the solver never sees anywhere else -- so reward_difficulty_raw probed
+    the solver with a prompt shape it was never going to be given at verify time.
+    p_success came back 0 for every sample, which is why reward_curriculum was 0
+    on 91% of the 100 steps in the first run.
+    """
+    return SOLVER_USER_TMPL.format(question=question.strip(), tools_json=tools_text.strip())
 
 
 def extract_solver_tool_call(response_text: str) -> Optional[Dict[str, Any]]:
     """Extract and normalize the solver's `<tool_call_answer>` from text."""
     tca = _last_tag(response_text, "tool_call_answer")
+    if tca is None:
+        # Generation stopped at the closing tag, so it is not in the text.
+        tail = _text_after_last_open_tag(response_text, "tool_call_answer")
+        tca = _trim_to_json_array(tail) if tail is not None else None
     if tca is None:
         return None
     obj = _json_loads_relaxed(tca)
@@ -215,22 +293,48 @@ def solver_sample_tool_calls(
     temperature: float = TEMP_SOLVER,
     max_tokens: int = MAX_TOKENS_SOLVER,
 ) -> List[Optional[Dict[str, Any]]]:
-    """Query the solver model multiple times and collect normalized tool calls."""
+    """Query the solver model multiple times and collect normalized tool calls.
+
+    Sampled as one request with n=k rather than k sequential requests. The
+    difficulty reward probes the solver once per gated completion on every step,
+    so at k=8 this collapses 8 round-trips into 1 on the dominant part of step
+    time. If the server returns anything other than k choices it is ignored and
+    we fall back to the sequential loop, which is correct either way.
+    """
     client = get_client(base_url)
-    outs: List[Optional[Dict[str, Any]]] = []
-    for _ in range(k):
+    messages = [
+        {"role": "system", "content": solver_system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+    texts: List[str] = []
+    try:
         resp = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": solver_system_prompt},
-                {"role": "user", "content": user_message},
-            ],
+            messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            n=k,
+            stop=[_SOLVER_STOP],
+            extra_body={"include_stop_str_in_output": True},
         )
-        txt = resp.choices[0].message.content or ""
-        outs.append(extract_solver_tool_call(txt))
-    return outs
+        if len(resp.choices) == k:
+            texts = [c.message.content or "" for c in resp.choices]
+    except Exception:
+        texts = []
+
+    if not texts:
+        for _ in range(k):
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=[_SOLVER_STOP],
+                extra_body={"include_stop_str_in_output": True},
+            )
+            texts.append(resp.choices[0].message.content or "")
+
+    return [extract_solver_tool_call(t) for t in texts]
 
 
 class SolverCache:
@@ -349,41 +453,81 @@ def difficulty_reward_bandpass(
     return 1.0
 
 
+# The tags a generator completion must carry, in the order the prompt lists them.
+REQUIRED_GENERATOR_TAGS = ("think", "question", "available_tools", "tool_call_answer")
+
+
+def _parse_completion(completion_text: str) -> Dict[str, Any]:
+    """Score each required block on its own, without gating on the others.
+
+    `extract_generator_fields` is all-or-nothing: miss one tag and it returns
+    None, so the three format rewards all collapse to 0. That is what made the
+    reward landscape unwalkable for the 0.5B generator -- measured over the 832
+    completions logged in steps 1-52, 87% were missing at least one tag, and
+    `tool_call_answer` alone was absent 92% of the time. A completion carrying a
+    well-formed `<available_tools>` list and nothing else scored identically to
+    one that was pure prose, so nothing in the gradient pointed from "close" to
+    "correct".
+
+    Here each block is parsed on its own merits. `valid` keeps its original
+    meaning (every required tag present) so the *validity* reward still demands
+    a complete sample -- that reward is about the gold call matching the tool
+    schema, which is meaningless when either block is missing.
+    """
+    present: Dict[str, bool] = {}
+    blocks: Dict[str, str] = {}
+    for tag in REQUIRED_GENERATOR_TAGS:
+        v = _last_tag(completion_text, tag)
+        present[tag] = v is not None and v.strip() != ""
+        if present[tag]:
+            blocks[tag] = v.strip()
+
+    n_present = sum(present.values())
+    fields = extract_generator_fields(completion_text, think_flag=True)
+
+    # Parsed only when the block is there, so an absent block is distinguishable
+    # from a present-but-malformed one if a future reward wants that distinction.
+    tools = parse_available_tools(blocks["available_tools"]) if present["available_tools"] else None
+    gold_obj = _json_loads_relaxed(blocks["tool_call_answer"]) if present["tool_call_answer"] else None
+    gold = normalize_tool_call(gold_obj) if gold_obj is not None else None
+
+    return {
+        "valid": fields is not None,
+        "fields": fields,
+        "tools": tools,
+        "gold": gold,
+        "present": present,
+        "blocks": blocks,
+        "n_present": n_present,
+        "n_required": len(REQUIRED_GENERATOR_TAGS),
+        "tools_block_ok": tools is not None,
+        "gold_block_ok": gold is not None,
+    }
+
+
 class CompletionCache:
     """
-    Cache parsed fields for a completion to avoid redundant parsing
-    across multiple reward functions.
+    Cache parsed fields to avoid redundant parsing across reward functions.
+
+    Keyed on the text itself, not on `id()`. The old key was `id(completion_text)`
+    and `clear_all_caches()` is never called, so entries from every step of a run
+    accumulate; CPython hands a freed string's address to the next string of a
+    similar size, so a later completion could be scored with an earlier step's
+    parse. Hashing a string is cached on the object after the first call, so this
+    costs nothing per reward function, and the retained text is a couple of MB
+    over a whole run.
     """
-    _cache: Dict[int, Dict[str, Any]] = {}
-    
+    _cache: Dict[str, Dict[str, Any]] = {}
+
     @classmethod
     def get_or_parse(cls, completion_text: str) -> Dict[str, Any]:
-        key = id(completion_text)
-        
+        key = completion_text
+
         if key not in cls._cache:
-            fields = extract_generator_fields(completion_text, think_flag=True)
-            
-            if fields is None:
-                cls._cache[key] = {
-                    "valid": False,
-                    "fields": None,
-                    "tools": None,
-                    "gold": None,
-                }
-            else:
-                tools = parse_available_tools(fields["available_tools"])
-                gold_obj = _json_loads_relaxed(fields["tool_call_answer"])
-                gold = normalize_tool_call(gold_obj) if gold_obj is not None else None
-                
-                cls._cache[key] = {
-                    "valid": True,
-                    "fields": fields,
-                    "tools": tools,
-                    "gold": gold,
-                }
-        
+            cls._cache[key] = _parse_completion(completion_text)
+
         return cls._cache[key]
-    
+
     @classmethod
     def clear(cls):
         cls._cache.clear()
@@ -476,84 +620,83 @@ def _question_gate_mask(completions) -> List[float]:
     for completion in completions:
         comp = completion[0]["content"]
         parsed = CompletionCache.get_or_parse(comp)
-        if (not parsed["valid"]) or (parsed["fields"] is None):
+        # Only the question block is this gate's business. It used to also
+        # require every other tag to be present, which stacked a second
+        # all-or-nothing gate on top of reward_tags_parsed's own: a completion
+        # carrying a good question and a missing <tool_call_answer> scored 0 on
+        # all three format rewards, so the partial credit the format rewards now
+        # give for the blocks it did emit never reached the gradient. The
+        # validity and curriculum rewards each check the gold block themselves,
+        # so relaxing this does not leak credit into them.
+        q = parsed["blocks"].get("question", "")
+        if not q:
             mask.append(0.0)
             continue
-        q = parsed["fields"].get("question", "")
-        mask.append(0.0 if is_placeholder_question(q) else 1.0)
+        # Two gates, both hard zeros: the placeholder patterns above, and the
+        # shared question-quality gate. The second one is what stops the
+        # generator from earning format reward for emitting its own
+        # instructions as the question, which is what it drifted into.
+        if is_placeholder_question(q) or is_unusable_question(q):
+            mask.append(0.0)
+            continue
+        mask.append(1.0)
     return mask
 
-
+# 格式奖励：标签奖励
 def reward_tags_parsed(prompts, completions, **kwargs) -> List[float]:
     """
-    Reward 1: Did all required tags parse successfully?
-    
-    Returns:
-        0.0 if any required tag is missing or empty
-        1.0 if all tags parsed successfully
+    Reward 1: How many of the required tags parsed successfully?
+
+    Fractional rather than all-or-nothing: 0.75 means three of the four blocks
+    are there. A completion that emits everything but the closing
+    `<tool_call_answer>` tag used to score the same as pure prose, which left
+    GRPO with no direction to push. The maximum is still 1.0, so a perfect
+    sample is worth exactly what it was before.
     """
     rewards: List[float] = []
-    
+
     for completion in completions:
         comp = completion[0]["content"]
         parsed = CompletionCache.get_or_parse(comp)
-        
-        if parsed["valid"]:
-            rewards.append(1.0)
-        else:
-            rewards.append(0.0)
-    
+        rewards.append(parsed["n_present"] / float(parsed["n_required"]))
+
     return rewards
 
-
+# 格式奖励：工具列表是不是有效json
 def reward_tools_valid_json(prompts, completions, **kwargs) -> List[float]:
     """
-    Reward 2: Is <available_tools> a valid JSON list of tool specs?
-    
-    Returns:
-        0.0 if tools don't parse or tags are invalid
-        1.0 if tools parse as valid JSON list with proper structure
+    Reward 2: Is the `<available_tools>` block a valid JSON list of tool specs?
+
+    Scored on that block alone. It used to be gated on all four tags parsing,
+    so a perfectly good tool list scored 0 whenever some *other* block was
+    missing -- one more way for a near-miss to be indistinguishable from noise.
     """
     rewards: List[float] = []
-    
+
     for completion in completions:
         comp = completion[0]["content"]
         parsed = CompletionCache.get_or_parse(comp)
-        
-        if not parsed["valid"]:
-            rewards.append(0.0)
-        elif parsed["tools"] is not None:
-            rewards.append(1.0)
-        else:
-            rewards.append(0.0)
-    
+        rewards.append(1.0 if parsed["tools_block_ok"] else 0.0)
+
     return rewards
 
-
+# 格式奖励：标准答案能否被解析
 def reward_gold_valid_json(prompts, completions, **kwargs) -> List[float]:
     """
-    Reward 3: Does <tool_call_answer> parse and normalize correctly?
-    
-    Returns:
-        0.0 if gold doesn't parse/normalize or tags are invalid
-        1.0 if gold parses and normalizes to valid tool call structure
+    Reward 3: Does the `<tool_call_answer>` block parse and normalize correctly?
+
+    Scored on that block alone, for the same reason as reward 2.
     """
     rewards: List[float] = []
-    
+
     for completion in completions:
         comp = completion[0]["content"]
         parsed = CompletionCache.get_or_parse(comp)
-        
-        if not parsed["valid"]:
-            rewards.append(0.0)
-        elif parsed["gold"] is not None:
-            rewards.append(1.0)
-        else:
-            rewards.append(0.0)
-    
+        rewards.append(1.0 if parsed["gold_block_ok"] else 0.0)
+
     return rewards
 
-
+# 任务有效性奖励：正确的工具调用是否在工具列表中
 def reward_gold_tool_exists(prompts, completions, **kwargs) -> List[float]:
     """
     Reward 4: Does the gold tool call reference a tool that exists in available_tools?
@@ -582,7 +725,7 @@ def reward_gold_tool_exists(prompts, completions, **kwargs) -> List[float]:
     
     return rewards
 
-
+# 任务有效性：是否正确的工具调用满足工具列表的参数设置
 def reward_gold_args_valid(prompts, completions, **kwargs) -> List[float]:
     """
     Reward 5: Do the gold arguments satisfy the tool's schema (required params)?
@@ -617,7 +760,7 @@ def reward_gold_args_valid(prompts, completions, **kwargs) -> List[float]:
     
     return rewards
 
-
+# 任务有效性：调用工具的参数是否出现在问题里
 def reward_gold_values_valid(prompts, completions, **kwargs) -> List[float]:
     rewards: List[float] = []
 
@@ -644,8 +787,8 @@ def reward_gold_values_valid(prompts, completions, **kwargs) -> List[float]:
             variants = get_grounding_variants(val)
             found = False
 
-        for v in variants:
-            if v.isdigit():
+            for v in variants:
+                if v.isdigit():
                     if re.search(rf"\b{re.escape(v)}\b", q_norm):
                         found = True
                         break
@@ -661,7 +804,6 @@ def reward_gold_values_valid(prompts, completions, **kwargs) -> List[float]:
         rewards.append(1.0 if ok else 0.0)
 
     return rewards
-
 
 
 def reward_difficulty_raw(prompts, completions, **kwargs) -> List[float]:

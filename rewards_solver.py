@@ -106,12 +106,36 @@ def _last_tag(text: str, tag: str) -> Optional[str]:
         return None
     return m[-1].strip()
 
-def _loads_super_relaxed(s: str) -> Optional[Any]:
+_MISSING = object()
+
+
+def _contains_ellipsis(x: Any) -> bool:
+    """True if x is, or contains, a bare Ellipsis (what a truncated `...` parses to)."""
+    if x is Ellipsis:
+        return True
+    if isinstance(x, dict):
+        return any(_contains_ellipsis(k) or _contains_ellipsis(v) for k, v in x.items())
+    if isinstance(x, (list, tuple)):
+        return any(_contains_ellipsis(i) for i in x)
+    return False
+
+
+def _loads_super_relaxed(s: str, *, guard_ellipsis: bool = True) -> Optional[Any]:
     """
     Parse either:
       - valid JSON
       - python repr strings produced by str(dict/list) (single quotes)
       - strings wrapped in ```json fences
+
+    `guard_ellipsis` drops a result containing a bare Ellipsis, which is what a
+    truncated `...`, `[...]` or `{"k": ...}` parses to via ast.literal_eval. The
+    check is on the parsed value, not on the raw text: "..." also occurs inside
+    legitimate strings ("wait..."), and rejecting on the raw text threw away
+    valid tool calls -- on the model side a correct answer scored 0, and on the
+    ground-truth side it made the gold answer unparseable, so a perfect
+    prediction scored 0 there too. Truncation that does not parse into an
+    Ellipsis is rejected by the parsers themselves. Pass False to skip the check
+    (ground truth is trusted data, not model output).
     """
     if s is None:
         return None
@@ -119,24 +143,23 @@ def _loads_super_relaxed(s: str) -> Optional[Any]:
     s2 = s.strip()
     s2 = re.sub(r"^```(?:json)?\s*|\s*```$", "", s2, flags=re.IGNORECASE).strip()
 
-    if s2 == "..." or s2.startswith("[...") or s2.endswith("...]") or "..." in s2:
+    parsed = _MISSING
+    for attempt in (
+        lambda: json.loads(s2),
+        lambda: ast.literal_eval(s2),
+        lambda: json.loads(s2.replace("None", "null").replace("True", "true").replace("False", "false")),
+    ):
+        try:
+            parsed = attempt()
+        except Exception:
+            continue
+        break
+    if parsed is _MISSING:
         return None
 
-    try:
-        return json.loads(s2)
-    except Exception:
-        pass
-
-    try:
-        return ast.literal_eval(s2)
-    except Exception:
-        pass
-
-    s3 = s2.replace("None", "null").replace("True", "true").replace("False", "false")
-    try:
-        return json.loads(s3)
-    except Exception:
+    if guard_ellipsis and _contains_ellipsis(parsed):
         return None
+    return parsed
 
 def _json_loads_relaxed(s: str) -> Optional[Any]:
     """Backward-compatible alias for `_loads_super_relaxed`."""
@@ -174,7 +197,7 @@ def parse_ground_truth_answer(answer_obj: Any) -> Optional[List[Dict[str, Any]]]
     if not isinstance(answer_obj, str):
         return None
 
-    parsed = _loads_super_relaxed(answer_obj)
+    parsed = _loads_super_relaxed(answer_obj, guard_ellipsis=False)
     if isinstance(parsed, list):
         return parsed
     if isinstance(parsed, dict):

@@ -1,13 +1,22 @@
 #!/bin/bash
 
-BASE_MODEL="Qwen/Qwen2.5-1.5B-Instruct"
-ABBREVIATION="qwen2.5-1.5b-instruct-tool-r0"
-ITERATIONS=5
-TRAIN_STEPS_GEN=50
+BASE_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
+ABBREVIATION="qwen2.5-0.5b-instruct-tool-r0"
+ITERATIONS=1
+# 4 步时每个 optimizer step 只有 2 个不同 prompt（generation_batch_size=8 completions
+# ÷ num_generations 4），全程只见过 8 个 prompt，3/4 的步 grad_norm=0、frac_reward_zero_std=1.0，
+# generator 实质没动，step2 只能 kept 7/300。拉到 100 步 = 200 个 prompt（约 2 epoch）。
+TRAIN_STEPS_GEN=100
 TRAIN_STEPS_SOLVER=50
 BASE_DIR="./${ABBREVIATION}"
 
-export WANDB_DISABLED=false
+# Activate this repo's venv explicitly. Bare `python` otherwise resolves to
+# whatever venv the calling shell has active (search-zero/.venv on this box),
+# which has no vllm and a torch too old for TRL.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.venv/bin/activate"
+
+# Offline so a run does not stall on a wandb login prompt.
+export WANDB_MODE=offline
 export WANDB_PROJECT="self-play-$ABBREVIATION"
 
 echo "----------------------------------------------------------------"
@@ -24,7 +33,33 @@ export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
 export VLLM_USE_V1=0
 export VLLM_DISABLE_COMPILE_CACHE=1
-export NCCL_ASYNC_ERROR_HANDLING=1
+
+# ---------------------------------------------------------------- assertions
+# Every stage must leave a real artifact behind. Without these checks the script
+# printed "Self-Play Complete." even when step2 wrote [] and step3 never trained,
+# which made a dead run look like a finished one.
+die() { echo "!!! FATAL: $*" >&2; exit 1; }
+
+require_dir()  { [ -d "$1" ] || die "$2 not found at $1"; }
+require_file() { [ -f "$1" ] || die "$2 not found at $1"; }
+
+json_rows() {
+    python - "$1" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(len(d) if isinstance(d, (list, dict)) else 0)
+except Exception:
+    print(0)
+PY
+}
+
+require_solver_ckpt() {
+    require_dir "$1/checkpoint-${TRAIN_STEPS_SOLVER}" "solver checkpoint"
+    require_file "$1/checkpoint-${TRAIN_STEPS_SOLVER}/adapter_config.json" \
+                 "solver adapter config"
+}
+# ---------------------------------------------------------------------------
 
 
 echo ">>> STARTING ITERATION 1 (Initialization)"
@@ -41,18 +76,20 @@ bash run_step1.sh \
     "$BASE_MODEL" \
     "$GEN_V1_DIR" \
     "${ABBREVIATION}-iter1-gen" \
-    "$TRAIN_STEPS_GEN"
+    "$TRAIN_STEPS_GEN" || die "step1 failed"
 
 GEN_V1_CKPT="${GEN_V1_DIR}/checkpoint-${TRAIN_STEPS_GEN}"
 
-pkill python
-pkill -u $USER -f python
-pkill -f vllm
+# step1 merges the LoRA adapter back into the base weights, so the checkpoint is
+# a plain model dir with safetensors in it, not an adapter dir.
+require_dir  "$GEN_V1_CKPT" "generator checkpoint"
+require_file "$GEN_V1_CKPT/model.safetensors" "merged generator weights"
+echo "[Iter 1] generator checkpoint OK: $GEN_V1_CKPT"
 
-pkill -f vllm || true
-pkill -u $USER -f python || true
+# Free the card for step2. Scoped to the api_server pattern on purpose: a bare
+# `pkill python` here would also take down unrelated python processes on the box.
+pkill -f "vllm.entrypoints.openai.api_server" || true
 sleep 5
-nvidia-smi
 nvidia-smi
 
 
@@ -61,7 +98,11 @@ echo "[Iter 1] Step 2: Generating Data..."
 bash run_step2.sh \
     "$GEN_V1_CKPT" \
     "$BASE_MODEL" \
-    "$DATA_V1_JSON"
+    "$DATA_V1_JSON" || die "step2 failed"
+
+DATA_ROWS=$(json_rows "$DATA_V1_JSON")
+echo "[Iter 1] dataset rows = $DATA_ROWS"
+[ "$DATA_ROWS" -ge 5 ] || die "dataset $DATA_V1_JSON has only $DATA_ROWS rows; refusing to train step3 on it"
 
 pkill -f "vllm.entrypoints.openai.api_server" || true
 sleep 5
@@ -72,8 +113,9 @@ bash run_step3.sh \
     "$DATA_V1_JSON" \
     "$SOLVER_V1_DIR" \
     "${ABBREVIATION}-iter1-solver" \
-    "$TRAIN_STEPS_SOLVER"
+    "$TRAIN_STEPS_SOLVER" || die "step3 failed"
 
+require_solver_ckpt "$SOLVER_V1_DIR"
 echo ">>> FINISHED ITERATION 1"
 
 
@@ -93,10 +135,10 @@ do
     CURR_DATA_JSON="${BASE_DIR}/iter${i}_data.json"
 
     if [ ! -d "$PREV_SOLVER_CKPT" ]; then
-        echo "ERROR: Previous solver checkpoint not found at $PREV_SOLVER_CKPT"
+        die "Previous solver checkpoint not found at $PREV_SOLVER_CKPT"
     fi
     if [ ! -d "$PREV_GEN_CKPT" ]; then
-    echo "ERROR: Previous generator checkpoint not found at $PREV_GEN_CKPT"
+        die "Previous generator checkpoint not found at $PREV_GEN_CKPT"
     fi
 
 
@@ -114,7 +156,8 @@ do
 
     CURR_GEN_CKPT="${CURR_GEN_DIR}/checkpoint-${TRAIN_STEPS_GEN}"
 
-    pkill python
+    pkill -f "vllm.entrypoints.openai.api_server" || true
+    sleep 5
 
     echo "[Iter $i] Step 2: Generating Data..."
     bash run_step2.sh \
@@ -131,12 +174,16 @@ do
         "$CURR_DATA_JSON" \
         "$CURR_SOLVER_DIR" \
         "${ABBREVIATION}-iter${i}-solver" \
-        "$TRAIN_STEPS_SOLVER"
+        "$TRAIN_STEPS_SOLVER" || die "step3 (iter $i) failed"
 
+    require_solver_ckpt "$CURR_SOLVER_DIR"
     echo ">>> FINISHED ITERATION $i"
 done
 
+FINAL_SOLVER="${BASE_DIR}/iter${ITERATIONS}_solver/checkpoint-${TRAIN_STEPS_SOLVER}"
+require_solver_ckpt "${BASE_DIR}/iter${ITERATIONS}_solver"
+
 echo "================================================================"
 echo "Self-Play Complete."
-echo "Model: ${BASE_DIR}/iter${ITERATIONS}_solver/checkpoint-${TRAIN_STEPS_SOLVER}"
+echo "Model: $FINAL_SOLVER"
 echo "================================================================"

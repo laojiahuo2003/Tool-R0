@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 from vllm import LLM, SamplingParams
 
+from question_quality import question_quality_reason
+
 
 DOMAINS = [
     # --- Primary Functional Domains (Explicitly listed in docs) ---
@@ -403,6 +405,12 @@ def normalize_tools_schema(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def non_triviality_heuristic(question: str, calls: List[Dict[str, Any]]) -> Tuple[bool, str]:
+    # Shared gate first: meta-instructions, tool-naming questions and leaked
+    # transcripts. Keeping this in step2_gen alone let the generator earn format
+    # reward during training for questions step2 then discarded.
+    reason = question_quality_reason(question)
+    if reason is not None:
+        return False, reason
     q = question.lower().strip()
     if len(q) < 25:
         return False, "question_too_short"
