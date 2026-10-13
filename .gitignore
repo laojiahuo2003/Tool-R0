@@ -151,7 +151,9 @@ vllm_server.log
 
 # Large model/training outputs. Regenerable, and a merged 0.5B checkpoint alone
 # (~1GB) blows past GitHub's 100MB per-file limit, so these must never be committed.
+# 3B is ~6x that.
 qwen2.5-0.5b-instruct-tool-r0/
+qwen2.5-3b-instruct-tool-r0/
 *.safetensors
 .watch_offset
 

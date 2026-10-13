@@ -1,11 +1,10 @@
 #!/bin/bash
 
-# Activate this repo's venv explicitly. Bare `python` otherwise resolves to
-# whatever venv the calling shell has active (search-zero/.venv on this box),
-# which has no vllm and a torch too old for TRL.
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.venv/bin/activate"
+# Activate this repo's venv if it exists (see run_main.sh for why it is optional).
+VENV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.venv"
+[ -f "$VENV/bin/activate" ] && source "$VENV/bin/activate"
 
-MODEL_PATH=${1:-"Qwen/Qwen2.5-0.5B-Instruct"}
+MODEL_PATH=${1:-${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct}}
 PORT=${2:-5000}
 
 # NOTE: --served-model-name must stay "solver" and the port must stay 5000.

@@ -1,7 +1,7 @@
 #!/bin/bash
 
-BASE_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
-ABBREVIATION="qwen2.5-0.5b-instruct-tool-r0"
+BASE_MODEL="${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct}"
+ABBREVIATION="${ABBREVIATION:-qwen2.5-3b-instruct-tool-r0}"
 ITERATIONS=1
 # 4 步时每个 optimizer step 只有 2 个不同 prompt（generation_batch_size=8 completions
 # ÷ num_generations 4），全程只见过 8 个 prompt，3/4 的步 grad_norm=0、frac_reward_zero_std=1.0，
@@ -10,10 +10,12 @@ TRAIN_STEPS_GEN=100
 TRAIN_STEPS_SOLVER=50
 BASE_DIR="./${ABBREVIATION}"
 
-# Activate this repo's venv explicitly. Bare `python` otherwise resolves to
-# whatever venv the calling shell has active (search-zero/.venv on this box),
-# which has no vllm and a torch too old for TRL.
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.venv/bin/activate"
+# Activate this repo's venv if it exists. On boxes that already ship a working
+# ROCm/CUDA stack system-wide (e.g. a bare MI300X image) there is no .venv, and a
+# hard `source` would abort the run. When .venv does exist (the original dev box)
+# we still want it, otherwise bare `python` resolves to some unrelated venv.
+VENV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.venv"
+[ -f "$VENV/bin/activate" ] && source "$VENV/bin/activate"
 
 # Offline so a run does not stall on a wandb login prompt.
 export WANDB_MODE=offline

@@ -9,7 +9,8 @@
 set -euo pipefail
 
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source .venv/bin/activate
+# 只有存在 .venv 时才激活（远程裸机没有 venv，直接走系统 python）。
+if [ -f .venv/bin/activate ]; then source .venv/bin/activate; fi
 
 if [[ -z "${TEACHER_API_KEY:-}" ]]; then
     echo "缺少 TEACHER_API_KEY：export TEACHER_API_KEY=sk-xxxx" >&2

@@ -7,7 +7,7 @@ rewards/format_reward_func/mean = 0.978 at step 1, i.e. the base model scores
 11% tag emission. One of the two is wrong. This runs the official prompt and the
 official format_reward_func against the base model.
 """
-import sys, json, random
+import sys, json, random, os
 sys.path.insert(0, "/tmp")
 import importlib.util
 
@@ -18,7 +18,7 @@ spec.loader.exec_module(R)
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 
-MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+MODEL = os.environ.get("BASE_MODEL", "Qwen/Qwen2.5-3B-Instruct")
 SYSTEM_PROMPT_SOLVER = (
     "A conversation between user and tool-calling assistant. The user asks a question, and the assistant uses tools to solve it. The "
     "assistant first thinks about the reasoning process in the mind and then provides the user with the answer. "

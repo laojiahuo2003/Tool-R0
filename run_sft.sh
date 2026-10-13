@@ -6,14 +6,16 @@
 #
 # 用法：
 #   bash run_sft.sh \
-#       Qwen/Qwen2.5-0.5B-Instruct \
-#       ./qwen2.5-0.5b-instruct-tool-r0/iter1_generator_sft \
+#       Qwen/Qwen2.5-3B-Instruct \
+#       ./qwen2.5-3b-instruct-tool-r0/iter1_generator_sft \
 #       iter1-gen-sft \
 #       ./sft_generator_data.jsonl \
 #       3
 
-# 显式激活本仓库的 venv：否则裸 python 会落到调用 shell 当前激活的别的 venv。
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.venv/bin/activate"
+# 显式激活本仓库的 venv（若存在）：否则裸 python 会落到调用 shell 当前激活的别的 venv。
+# 远程裸机没有 .venv 时跳过这一句，直接用系统 python。
+VENV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.venv"
+[ -f "$VENV/bin/activate" ] && source "$VENV/bin/activate"
 
 MODEL_PATH=$1
 OUTPUT_DIR=$2
