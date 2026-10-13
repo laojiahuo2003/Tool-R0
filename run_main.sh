@@ -96,7 +96,8 @@ echo "[Iter 1] generator checkpoint OK: $GEN_V1_CKPT"
 # `pkill python` here would also take down unrelated python processes on the box.
 pkill -f "vllm.entrypoints.openai.api_server" || true
 sleep 5
-nvidia-smi
+# 看一眼显存是否真的释放。CUDA 机器用 nvidia-smi，ROCm 机器用 rocm-smi，两个都没有就跳过。
+nvidia-smi 2>/dev/null || rocm-smi 2>/dev/null || true
 
 
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
