@@ -1,6 +1,10 @@
 #!/bin/bash
 
 BASE_MODEL="${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct}"
+# Generator 的 RL 起点。默认等于 BASE_MODEL；做过 SFT 热启动就把它指到
+# run_sft.sh 产出的合并 checkpoint（<OUTPUT_DIR>/checkpoint-<N>），
+# 这样只有第 1 轮的 generator 从热启动模型起，solver 仍从 BASE_MODEL 起。
+GEN_INIT_MODEL="${GEN_INIT_MODEL:-$BASE_MODEL}"
 ABBREVIATION="${ABBREVIATION:-qwen2.5-3b-instruct-tool-r0}"
 ITERATIONS=1
 # 4 步时每个 optimizer step 只有 2 个不同 prompt（generation_batch_size=8 completions
@@ -75,7 +79,7 @@ bash run_step0.sh "$BASE_MODEL" 5000
 
 echo "[Iter 1] Step 1: Training Generator v1..."
 bash run_step1.sh \
-    "$BASE_MODEL" \
+    "$GEN_INIT_MODEL" \
     "$GEN_V1_DIR" \
     "${ABBREVIATION}-iter1-gen" \
     "$TRAIN_STEPS_GEN" || die "step1 failed"
