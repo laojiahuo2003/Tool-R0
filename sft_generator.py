@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Generator 的 SFT 热启动：用 gen_sft_data.py 产出的合格样例把 0.5B 先拽进正确格式。
+"""Generator 的 SFT 热启动：用 gen_sft_data.py 产出的合格样例把 generator 先拽进正确格式。
+模型规模由 --model_name_or_path 决定，这段热启动逻辑与规模无关。
 
-为什么先做 SFT：RL(step1) 阶段 0.5B 几乎产不出规定的四段标签，奖励常为 0，
-GRPO 拿不到梯度。先监督学一遍"输入 control-spec → 输出四段标签"的映射，
+为什么先做 SFT：RL(step1) 阶段没热启动过的 generator 几乎产不出规定的四段标签，
+奖励常为 0，GRPO 拿不到梯度。先监督学一遍"输入 control-spec → 输出四段标签"的映射，
 再进 RL，起点才站得住。
 
 与现有流程的一致性：

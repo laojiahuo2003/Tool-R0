@@ -7,9 +7,9 @@ Tool-R0 的 generator 任务是从四个标量凭空发明整套任务，唯一�
   2. 产出的字符串能不能过 step2_gen.parse_and_validate
 这两件事才是 reward 能否从 0 爬起来的开关。
 
-用法：
-    python smoke_test_generator.py Qwen/Qwen2.5-0.5B-Instruct           # 基线
-    python smoke_test_generator.py ./qwen2.5-0.5b-instruct-tool-r0/iter1_generator_sft
+用法（模型规模自选，填你实际在用的那个）：
+    python smoke_test_generator.py <base_model_or_path>                            # 基线
+    python smoke_test_generator.py <sft_output_dir>/checkpoint-<N>                 # 热启动之后
 """
 import argparse
 import json

@@ -30,7 +30,7 @@ export WANDB_MODE=offline
 # max_length 4096 而不是 3072：实测 prompt 恒为 566 token，target 969-1773，
 # total 最大 2341。3072 只剩 ~730 token 余量，menu=8 + calls=2 的长尾样本会顶到，
 # 而 completion_only_loss 下被截掉的正好是尾部的 </think> —— 那恰是最要学的标签。
-# 0.5B + packing False，4096 的显存代价可以忽略。
+# packing False（不拼接样本），4096 的显存代价只随所选模型规模和 batch size 增长。
 
 python sft_generator.py \
     --model_name_or_path "$MODEL_PATH" \

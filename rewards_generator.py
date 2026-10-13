@@ -462,12 +462,12 @@ def _parse_completion(completion_text: str) -> Dict[str, Any]:
 
     `extract_generator_fields` is all-or-nothing: miss one tag and it returns
     None, so the three format rewards all collapse to 0. That is what made the
-    reward landscape unwalkable for the 0.5B generator -- measured over the 832
-    completions logged in steps 1-52, 87% were missing at least one tag, and
-    `tool_call_answer` alone was absent 92% of the time. A completion carrying a
-    well-formed `<available_tools>` list and nothing else scored identically to
-    one that was pure prose, so nothing in the gradient pointed from "close" to
-    "correct".
+    reward landscape unwalkable for a small generator -- measured on Qwen2.5-0.5B
+    over the 832 completions logged in steps 1-52, 87% were missing at least one
+    tag, and `tool_call_answer` alone was absent 92% of the time. A completion
+    carrying a well-formed `<available_tools>` list and nothing else scored
+    identically to one that was pure prose, so nothing in the gradient pointed
+    from "close" to "correct".
 
     Here each block is parsed on its own merits. `valid` keeps its original
     meaning (every required tag present) so the *validity* reward still demands
