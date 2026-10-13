@@ -323,15 +323,23 @@ def solver_sample_tool_calls(
         texts = []
 
     if not texts:
+        # 串行回退必须自己兜住异常：上面那段批量调用的 try/except 会把错误吞掉只留
+        # texts=[]，所以任何失败都会落到这里；这里再抛一次，整轮训练就会被一条过长
+        # 的 prompt 直接带走（实测 step1 第 23 步死于 vLLM 的 400 上下文超限）。
+        # 单条拿不到就当它没产出，补空串交给 extract_solver_tool_call 判 None。
         for _ in range(k):
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=[_SOLVER_STOP],
-                extra_body={"include_stop_str_in_output": True},
-            )
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=[_SOLVER_STOP],
+                    extra_body={"include_stop_str_in_output": True},
+                )
+            except Exception:
+                texts.append("")
+                continue
             texts.append(resp.choices[0].message.content or "")
 
     return [extract_solver_tool_call(t) for t in texts]
