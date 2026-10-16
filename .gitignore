@@ -148,6 +148,15 @@ venv.bak/
 triton_autotune/
 wandb/
 vllm_server.log
+vllm.pid
+
+# Round-runner state. The .ok/.status markers record which stages finished on
+# the machine that ran them, and run_round.sh treats an existing marker as
+# "already done" -- committing them would make a fresh clone skip stages it
+# never ran. The .bak_* file is a hand-made point-in-time copy of the ledger.
+*.ok
+*.status
+iter_funnel.jsonl.bak_*
 
 # Large model/training outputs. Regenerable, and a merged 0.5B checkpoint alone
 # (~1GB) blows past GitHub's 100MB per-file limit, so these must never be committed.
@@ -156,6 +165,10 @@ qwen2.5-0.5b-instruct-tool-r0/
 qwen2.5-3b-instruct-tool-r0/
 *.safetensors
 .watch_offset
+
+# Mid-run adapter backup from the 2026-10-13 lr=1e-5 experiment. Its weights are
+# *.safetensors (ignored above), so only a metadata file would land in git.
+ckpt20_adapter_backup/
 
 # Spyder project settings
 .spyderproject
