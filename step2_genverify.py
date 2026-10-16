@@ -212,12 +212,30 @@ def solver_agreement_batch(
     temperature: float,
     max_tokens: int,
     chunk_size: int,
-) -> Tuple[List[float], List[str], List[Optional[Any]], List[str]]:
+) -> Tuple[List[float], List[float], List[str], List[Optional[Any]], List[str]]:
     """
     Returns:
-      - agreement rates
+      - agreement rates（只比工具名序列，历史口径，tau_verify 仍用它）
+      - agreement rates FULL（工具名 + 参数全等，drop_saturated 和难度分档用它）
       - failure reason (best-effort)
       - first valid parsed prediction per prompt (for debugging/reporting)
+
+    为什么有两个口径（2026-10-16，round3 收摊后改）：
+      只比工具名会把 solver 的能力放大约 2 倍。iter3 池实测：存的那条预测
+      按名算命中 91.0%，按名+参全等算只有 45.3%。后果不是"数字好看点"，
+      是**误丢训练样本**——round3 被 `drop_agreement_ge 1.0` 当饱和丢掉的
+      656 条里，有 296 条（45.1%）是名对、参错，硬下界地不该丢
+      （存的那条预测就是 k 个样本里第一个能解析的，ag=1.0 时它必然点名正确，
+       所以它参错 ⟹ 这 k 个里至少一个参错 ⟹ 全等口径下不到 1.0）。
+      "名对参错"恰恰是梯度最密的那批，扔了它课程就退化：round3 的 hard 池
+      从 iter2 的 91 条掉到 30 条， mix 从 30/50/20 变成 22/45/33。
+
+      两个口径分开用，不是图省事都换成全等：
+        - tau_verify（这题碰不碰得到）留名口径：名对参错的题正是要训的，
+          用全等会把它们当成"够不着"滤掉。
+        - drop_agreement_ge（还有没有梯度）用全等：奖励算在完整调用上，
+          全等 10/10 才真的零梯度。
+        - 难度分档用全等：名口径已经饱和（91%），没有动态范围可言。
     """
     sp = SamplingParams(
         temperature=temperature,
@@ -229,11 +247,13 @@ def solver_agreement_batch(
     )
 
     gold_norms = [normalize_call_names_only(gc) or "" for gc in gold_calls_list]
+    gold_fulls = [normalize_call_json(gc) or "" for gc in gold_calls_list]
 
     rates: List[float] = [0.0] * len(prompts)
+    rates_full: List[float] = [0.0] * len(prompts)
     reasons: List[str] = ["ok"] * len(prompts)
     preds: List[Optional[Any]] = [None] * len(prompts)
-    raw_samples: List[str] = [""] * len(prompts) 
+    raw_samples: List[str] = [""] * len(prompts)
 
     for start in range(0, len(prompts), chunk_size):
         end = min(start + chunk_size, len(prompts))
@@ -243,7 +263,9 @@ def solver_agreement_batch(
         for j, req in enumerate(req_outs):
             idx = start + j
             g = gold_norms[idx]
+            gf = gold_fulls[idx]
             ok = 0
+            ok_full = 0
             local = Counter()
 
             first_valid_pred = None
@@ -273,16 +295,33 @@ def solver_agreement_batch(
 
                 if pn == g:
                     ok += 1
+                    # 全等是名的子集，所以只在名对时才算，省一次序列化。
+                    # 参数不是 dict（缺 arguments / 是 null）时 normalize_call_json
+                    # 返回 None，此时判不等号——调用了但没给参数，不算全等。
+                    pf = normalize_call_json(pred)
+                    if pf is not None and pf == gf:
+                        ok_full += 1
+                    else:
+                        # 单列一个原因：这正是 round3 被误丢的那批，
+                        # 混在 mismatch 里的话报告上看不见。
+                        local["args_mismatch"] += 1
                 else:
                     local["mismatch"] += 1
 
             rates[idx] = ok / float(k)
+            rates_full[idx] = ok_full / float(k)
             preds[idx] = first_valid_pred
 
-            if ok < k and local:
+            # 注意这里是 ok < k **或** ok_full < k，不是只判 ok。
+            # 单测 test_agreement_full.py 第 1 组抓到的：k 个样本全点名正确、
+            # 但有几个参数不对时，ok == k 会让 reason 停在 "ok"，
+            # 而"名对参错"恰恰是这次改口径要抓的那种情况，藏在 ok 里看不见。
+            # ok_full < k 时 local 必然非空（至少记了一条 args_mismatch），
+            # 所以下面这个 and local 的守卫仍然成立。
+            if (ok < k or ok_full < k) and local:
                 reasons[idx] = local.most_common(1)[0][0]
 
-    return rates, reasons, preds, raw_samples
+    return rates, rates_full, reasons, preds, raw_samples
 
 
 def main():
@@ -361,7 +400,7 @@ def main():
     )
 
 
-    rates, reasons, preds, raw_samples = solver_agreement_batch(
+    rates, rates_full, reasons, preds, raw_samples = solver_agreement_batch(
         llm_solver=llm_solver,
         prompts=prompts,
         gold_calls_list=gold_calls_list,
@@ -375,11 +414,14 @@ def main():
     dropped = []
     drop_reasons = Counter()
 
-    for d, r, rsn, pred, raw in zip(kept_input_rows, rates, reasons, preds, raw_samples):
+    for d, r, rf, rsn, pred, raw in zip(kept_input_rows, rates, rates_full, reasons, preds, raw_samples):
         meta = d.get("meta", {})
         if not isinstance(meta, dict):
             meta = {}
         meta["solver_agreement"] = r
+        # 全等口径。select 的 drop_saturated 和难度分档读这个；
+        # tau_verify 门仍读上面的名口径（理由见 solver_agreement_batch 的 docstring）。
+        meta["solver_agreement_full"] = rf
         meta["solver_disagree_reason"] = rsn
         meta["solver_predicted_calls"] = pred
         meta["solver_raw_output"] = raw
@@ -422,6 +464,20 @@ def main():
             rf.write(f"  [{bins[i]:.1f}, {bins[i+1]:.1f}): {count}\n")
         count_perfect = sum(1 for r in rates if r == 1.0)
         rf.write(f"  [1.0, 1.0]: {count_perfect}\n")
+
+        # 全等口径的分布必须单独打。round3 的教训：只比工具名时 mean 91% 命中、
+        # 45% 的"饱和"样本其实是名对参错，报告上看不见，于是误当成"solver 已经全会"。
+        # 两个口径的差就是"点名会对、调用写不对"的那一批，也是训练信号最密的一批。
+        rf.write("\nAgreement distribution (FULL = name + args, 2026-10-16 新增口径):\n")
+        for i in range(len(bins) - 1):
+            count = sum(1 for r in rates_full if bins[i] <= r < bins[i+1])
+            rf.write(f"  [{bins[i]:.1f}, {bins[i+1]:.1f}): {count}\n")
+        count_perfect_full = sum(1 for r in rates_full if r == 1.0)
+        rf.write(f"  [1.0, 1.0]: {count_perfect_full}\n")
+        both_perfect = sum(1 for a, b in zip(rates, rates_full) if a == 1.0 and b < 1.0)
+        rf.write(f"\n  名口径=1.0 但全等<1.0（名对参错，不该当饱和丢）: {both_perfect}\n")
+        rf.write(f"  名口径 mean={sum(rates)/max(len(rates),1):.4f}  "
+                 f"全等 mean={sum(rates_full)/max(len(rates_full),1):.4f}\n")
 
         kept_domains = Counter(d.get("meta", {}).get("gen_spec", {}).get("domain", "unknown") for d in kept)
 
