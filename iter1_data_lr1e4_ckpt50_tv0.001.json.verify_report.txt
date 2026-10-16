@@ -1,0 +1,202 @@
+step2_genverify.py report
+input:  /tmp/step2_lr1e4_ckpt50.intermediate.json
+output: iter1_data_lr1e4_ckpt50_tv0.001.json.verified.json
+solver_model: Qwen/Qwen2.5-0.5B-Instruct
+k_verify: 10
+tau_verify: 0.2
+temp_verify: 0.001
+max_tokens_verify: 1024
+verify_batch_size: 32
+
+TOTAL:   1079
+KEPT:    499
+DROPPED: 580
+
+Drop reasons (top):
+  - mismatch: 293
+  - missing_tag: 149
+  - json_parse_fail: 126
+  - bad_call_schema: 12
+
+Agreement distribution:
+  [0.0, 0.2): 580
+  [0.2, 0.4): 38
+  [0.4, 0.6): 52
+  [0.6, 0.8): 47
+  [0.8, 1.0): 20
+  [1.0, 1.0]: 342
+
+Domain distribution (kept):
+  - healthcare: 26
+  - government: 22
+  - retail_ecommerce: 21
+  - entertainment: 21
+  - iot: 21
+  - database: 20
+  - legal: 20
+  - weather: 19
+  - travel: 19
+  - insurance: 19
+  - news: 18
+  - geolocation: 18
+  - utilities: 18
+  - web_search: 18
+  - social_media: 17
+  - memory_management: 17
+  - cybersecurity: 17
+  - sports: 15
+  - logistics: 14
+  - translation: 14
+  - cloud_infrastructure: 13
+  - system: 13
+  - communication: 13
+  - productivity: 12
+  - programming: 11
+  - finance: 11
+  - education: 10
+  - scheduling: 10
+  - food_ordering: 10
+  - real_estate: 10
+  - vehicle_control: 7
+  - math: 5
+
+Domain distribution (dropped):
+  - communication: 25
+  - social_media: 24
+  - logistics: 23
+  - real_estate: 22
+  - travel: 22
+  - food_ordering: 22
+  - insurance: 21
+  - legal: 21
+  - entertainment: 21
+  - memory_management: 20
+  - math: 20
+  - education: 19
+  - scheduling: 19
+  - cybersecurity: 19
+  - news: 19
+  - translation: 19
+  - finance: 19
+  - healthcare: 19
+  - system: 19
+  - vehicle_control: 18
+  - productivity: 17
+  - web_search: 17
+  - retail_ecommerce: 16
+  - iot: 16
+  - programming: 14
+  - utilities: 14
+  - cloud_infrastructure: 13
+  - geolocation: 13
+  - government: 13
+  - database: 12
+  - sports: 12
+  - weather: 12
+
+--- Dropped examples (truncated) ---
+
+[1] solver_agreement=0.000 reason=mismatch
+QUESTION:
+I need to find out if I have completed the course "CS101" for a high school level.
+AVAILABLE TOOLS:
+[{"name": "check_grade", "description": "Checks the user's grade level.", "parameters": {"type": "object", "properties": {"grade_level": {"type": "string", "description": "The desired grade level."}}, "required": ["grade_level"]}, "required": ["grade_level"]}, {"name": "get_study_plan", "description": "Provides a list of study topics for the user.", "parameters": {"type": "object", "properties": {"subject": {"type": "string", "description": "The subject of the study plan."}}, "required": ["subject"]}, "required": ["subject"]}, {"name": "create_study_plan", "description": "Suggests new study to
+GOLD CALLS:
+[{"name": "check_grade", "arguments": {"grade_level": "High School"}}]
+PREDICTED CALLS:
+[{"name": "search_courses", "arguments": {"subject": "CS101"}}]
+
+SOLVER RAW OUTPUT:
+<think>First, I need to find out the subject of the course "CS101".</think>
+</think>
+<tool_call_answer>[{"name": "search_courses", "arguments": {"subject": "CS101"}}]</tool_call_answer>
+
+[2] solver_agreement=0.000 reason=json_parse_fail
+QUESTION:
+Show me the memory usage, disk space, and CPU load for the current system.
+AVAILABLE TOOLS:
+[{"name": "get_memory_usage", "description": "Retrieve the current memory usage percentage for a specific host.", "parameters": {"type": "object", "properties": {"host": {"type": "string", "description": "The name of the host."}}, "required": ["host"]}, "required": ["host"]}, {"name": "get_disk_usage", "description": "Retrieve the current disk space usage percentage for a specific host.", "parameters": {"type": "object", "properties": {"host": {"type": "string", "description": "The name of the host."}}, "required": ["host"]}, "required": ["host"]}, {"name": "get_cpu_usage", "description": "Ret
+GOLD CALLS:
+[{"name": "get_memory_usage", "arguments": {"host": "default_host"}}]
+PREDICTED CALLS:
+null
+
+SOLVER RAW OUTPUT:
+<think>I need to get the memory usage, disk space, and CPU load for the current system.</think>
+</think>
+<tool_call_answer>
+  <tool_name>get_memory_usage</tool_name>
+  <tool_arguments>
+    <tool_name>host</tool_name>
+    <tool_arguments>
+      <tool_name>current</tool_name>
+    </tool_arguments>
+  </tool_arguments>
+  <tool_name>get_disk_usage</tool_name>
+  <tool_arguments>
+    <tool_name>host</tool_name>
+    <tool_arguments>
+      <tool_name>current</tool_name>
+    </tool_arguments>
+  </tool_arg
+
+[3] solver_agreement=0.000 reason=json_parse_fail
+QUESTION:
+I want to find the function 'print' in the file 'example_module.py' and also get its description.
+AVAILABLE TOOLS:
+[{"name": "find_function_definition", "description": "Searches for a specific function in a given codebase.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "The name of the function to search for."}}, "required": ["name"]}, "required": ["name"]}, {"name": "get_function_info", "description": "Gets detailed information about a specific function.", "parameters": {"type": "object", "properties": {"function_name": {"type": "string", "description": "The name of the function to retrieve."}, "function_description": {"type": "string", "description": "The docs
+GOLD CALLS:
+[{"name": "find_function_definition", "arguments": {"name": "find_function_definition"}}, {"name": "get_function_info", "arguments": {"function_name": "find_function_definition", "function_description": "Test Function"}}]
+PREDICTED CALLS:
+null
+
+SOLVER RAW OUTPUT:
+<think>I need to find the function 'print' in the file 'example_module.py'.</think>
+</think>
+<tool_call_answer>
+  <get_function_info>
+    <function_name>print</function_name>
+    <function_description>Prints the specified value or data to the console.</function_description>
+  </get_function_info>
+</tool_call_answer>
+
+[4] solver_agreement=0.000 reason=json_parse_fail
+QUESTION:
+I want to find properties in a specific building address and also check the average price per square meter within a certain radius around that address.
+AVAILABLE TOOLS:
+[{"name": "search_properties_by_address", "description": "Searches for properties in a specific address.", "parameters": {"type": "object", "properties": {"address": {"type": "string", "description": "The building address."}, "max_price_per_square_meter": {"type": "number", "description": "The maximum price for each house in the property."}}, "required": ["address"]}, "required": ["address"]}, {"name": "get_address", "description": "Returns the address and the maximum price for a property.", "parameters": {"type": "object", "properties": {"address": {"type": "string", "description": "The build
+GOLD CALLS:
+[{"name": "search_properties_by_address", "arguments": {"address": "123 Elm St", "max_price_per_square_meter": 100000}}]
+PREDICTED CALLS:
+null
+
+SOLVER RAW OUTPUT:
+I need to use the search properties by address tool to find properties in the specific building address.
+</think>
+<tool_call_answer>
+  <think>
+    <tool_name>search_properties_by_address</tool_name>
+    <tool_arguments>
+      <tool_name>search_properties_by_address</tool_name>
+      <tool_arguments>
+        <tool_name>address</tool_name>
+        <tool_arguments>
+          <tool_name>address</tool_name>
+          <tool_arguments>
+            <tool_name>address</tool_name>
+            <tool_argume
+
+[5] solver_agreement=0.000 reason=mismatch
+QUESTION:
+I need to schedule a meeting for "Meet at 1 PM tomorrow" on "12/03/2023".
+AVAILABLE TOOLS:
+[{"name": "get_meeting_list", "description": "Returns a list of meetings for a specific date and time.", "parameters": {"type": "object", "properties": {"date": {"type": "string", "description": "The date of the event."}, "time": {"type": "string", "description": "The start and end time of the meeting."}}, "required": ["date", "time"]}, "required": ["date", "time"]}, {"name": "find_slots", "description": "Returns a list of available times for a specific person.", "parameters": {"type": "object", "properties": {"person_name": {"type": "string", "description": "The name of the person."}, "start_
+GOLD CALLS:
+[{"name": "schedule_meeting", "arguments": {"person_name": "Meet at 1 PM tomorrow", "meeting_time": "12/03/2023 10:00", "date": "12/03/2023"}}]
+PREDICTED CALLS:
+[{"name": "find_slots", "arguments": {"person_name": "John Doe", "start_time": "12/03/2023 10:00", "end_time": "12/03/2023 11:00"}}]
+
+SOLVER RAW OUTPUT:
+<think>First, I need to find the available times for the person who needs the meeting.</think>
+</think>
+<tool_call_answer>[{"name": "find_slots", "arguments": {"person_name": "John Doe", "start_time": "12/03/2023 10:00", "end_time": "12/03/2023 11:00"}}]</tool_call_answer>

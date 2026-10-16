@@ -1,0 +1,4 @@
+{"iter": 2, "ts": "2026-10-15 20:32:51", "generated": 1118, "verified": 918, "dropped": 200, "curriculum": 100, "mix": "easy 21 (21%) / medium 49 (49%) / hard 30 (30%)", "verified_by": "iter1 solver"}
+{"iter": 3, "ts": "2026-10-16 00:06:27", "generated": 1149, "verified": 952, "dropped": 197, "curriculum": 100, "mix": "easy 33 (33%) / medium 45 (45%) / hard 22 (22%)", "verified_by": "iter2 solver"}
+{"iter": 3, "ts": "2026-10-16 01:10:14", "generated": 1149, "verified": 952, "dropped": 197, "curriculum": 100, "mix": "easy 33 (33%) / medium 45 (45%) / hard 22 (22%)", "verified_by": "iter2 solver"}
+{"iter": 4, "ts": "2026-10-16 02:44:21", "generated": 1143, "verified": 952, "dropped": 191, "curriculum": 100, "mix": "easy 20 (20%) / medium 48 (48%) / hard 32 (32%)", "verified_by": "iter3 solver"}
