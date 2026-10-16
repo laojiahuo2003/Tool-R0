@@ -7,6 +7,11 @@ BASE_MODEL="${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct}"
 GEN_INIT_MODEL="${GEN_INIT_MODEL:-$BASE_MODEL}"
 ABBREVIATION="${ABBREVIATION:-qwen2.5-3b-instruct-tool-r0}"
 ITERATIONS=1
+# 2026-10-14：别直接把 ITERATIONS 改成 2 来跑 iter2。下面第 148 行的循环按固定名字找
+#   ${BASE_DIR}/iter1_solver/checkpoint-50  和  ${BASE_DIR}/iter1_generator/checkpoint-50
+# 但 iter1 是手工跑的，实际产物叫 iter1_solver_rl/ 和 iter1_generator_rl_lr1e4/
+# （lr 那轮的名字留在目录名里了）。改了会在循环开头 die，而且上面 iter1 那段是无条件
+# 执行的，会先把 6.8 小时的 step1 重跑一遍。iter2 用 run_iter2.sh，它显式映射了路径。
 # 4 步时每个 optimizer step 只有 2 个不同 prompt（generation_batch_size=8 completions
 # ÷ num_generations 4），全程只见过 8 个 prompt，3/4 的步 grad_norm=0、frac_reward_zero_std=1.0，
 # generator 实质没动，step2 只能 kept 7/300——所以步数不能太少。这里取 50：与论文每轮的
@@ -65,9 +70,24 @@ PY
 }
 
 require_solver_ckpt() {
-    require_dir "$1/checkpoint-${TRAIN_STEPS_SOLVER}" "solver checkpoint"
-    require_file "$1/checkpoint-${TRAIN_STEPS_SOLVER}/adapter_config.json" \
-                 "solver adapter config"
+    local dir="$1/checkpoint-${TRAIN_STEPS_SOLVER}"
+    require_dir "$dir" "solver checkpoint"
+    # 2026-10-14 改：原来只认 adapter_config.json，但 step3 存盘时把 LoRA 合并回了整模
+    # （TRL 的 save_checkpoint 对 PEFT 走 merge 分支），目录里只有 model.safetensors，
+    # 没有 adapter_config.json。实测 iter1_solver_rl/checkpoint-50 的 ls 佐证：
+    #   README.md added_tokens.json chat_template.jinja config.json
+    #   generation_config.json merges.txt model.safetensors optimizer.pt rng_state.pth
+    #   scheduler.pt special_tokens_map.json tokenizer.json tokenizer_config.json
+    #   training_args.bin vocab.json        <- 无 adapter_config.json
+    # 于是 step3 成功训完之后，本函数会在 iter1 收尾处 die 掉，把一次成功的跑判成失败。
+    # 上面 generator 的断言（require_file "$GEN_V1_CKPT/model.safetensors"）早就改成
+    # 查整模了，注释也写明了 "step1 merges the LoRA adapter back into the base
+    # weights"，solver 这条漏改。这里两个形态都接受：合并整模优先，adapter 形态兜底
+    # （万一以后 TRL 改了存盘行为，或者哪一轮显式关了 merge）。
+    if [ -f "$dir/model.safetensors" ]; then
+        return 0
+    fi
+    require_file "$dir/adapter_config.json" "solver adapter config"
 }
 # ---------------------------------------------------------------------------
 
